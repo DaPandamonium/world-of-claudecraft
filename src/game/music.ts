@@ -4,7 +4,9 @@
 // fades in during combat. Each theme is a composed multi-track loop scheduled
 // with a lookahead timer; zone changes crossfade.
 
-export type MusicZone = 'town' | 'wilds' | 'dungeon';
+// Zone themes: each biome gets its own wilds theme ('vale' falls back to the
+// original wilds composition until per-biome themes land).
+export type MusicZone = 'town' | 'vale' | 'marsh' | 'peaks' | 'wilds' | 'dungeon';
 
 type Inst = 'strings' | 'flute' | 'harp' | 'horn' | 'choir' | 'bell' | 'timpani' | 'bass' | 'stacc';
 
@@ -283,6 +285,8 @@ export class MusicDirector {
   // called every frame by the HUD; cheap unless the state changed
   update(zone: MusicZone, inCombat: boolean): void {
     if (!this.ctx) return;
+    // biome themes not composed yet: all map onto the wilds layer
+    if (zone === 'vale' || zone === 'marsh' || zone === 'peaks') zone = 'wilds';
     if (zone === this.zone && inCombat === this.combat) return;
     this.zone = zone;
     this.combat = inCombat;

@@ -2,7 +2,12 @@ import * as THREE from 'three';
 import { Entity, SimEvent } from '../sim/types';
 import type { IWorld } from '../world_api';
 import { terrainHeight, groundHeight, generateDecorations, roadDistance, WATER_LEVEL } from '../sim/world';
-import { WORLD_SIZE, TOWN_RADIUS, MOBS, ABILITIES, DUNGEON_X_THRESHOLD, instanceOrigin, INSTANCE_SLOT_COUNT } from '../sim/data';
+import {
+  WORLD_SIZE, MOBS, ABILITIES, DUNGEON_X_THRESHOLD, DUNGEON_LIST,
+  instanceOrigin, INSTANCE_SLOT_COUNT, ZONES, ZoneDef,
+  WORLD_MAX_X, WORLD_MAX_Z, WORLD_MIN_Z,
+} from '../sim/data';
+import type { BiomeId } from '../sim/types';
 import { buildBear, buildRigFor, buildSheep, Rig } from './models';
 import { buildProps } from './props';
 import {
@@ -13,7 +18,20 @@ import { Vfx } from './vfx';
 
 const NAMEPLATE_RANGE = 55;
 // "max graphics" defaults; ?lowgfx keeps weak machines playable
-const LOW_GFX = typeof location !== 'undefined' && new URLSearchParams(location.search).has('lowgfx');
+const LOW_GFX_FLAG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('lowgfx');
+
+// Software GL (SwiftShader/llvmpipe — headless test runners, VMs) can't take
+// the full pipeline; drop to the lowgfx path automatically.
+function isSoftwareGL(webgl: THREE.WebGLRenderer): boolean {
+  try {
+    const gl = webgl.getContext();
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = String(dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+    return /swiftshader|llvmpipe|software/i.test(name);
+  } catch {
+    return false;
+  }
+}
 
 interface EntityView {
   group: THREE.Group;
@@ -47,6 +65,7 @@ export class Renderer {
   showNameplates = true;
   private tmpV = new THREE.Vector3();
   private sun: THREE.DirectionalLight;
+  private sky!: THREE.Mesh;
   private sunSprites: THREE.Sprite[] = [];
   private sunDir = new THREE.Vector3();
   private clouds: THREE.Sprite[] = [];
@@ -57,9 +76,13 @@ export class Renderer {
   private time = 0;
   vfx: Vfx;
 
+  private lowGfx: boolean;
+
   constructor(private sim: IWorld, canvas: HTMLCanvasElement, nameplateLayer: HTMLDivElement) {
     this.nameplateLayer = nameplateLayer;
-    this.webgl = new THREE.WebGLRenderer({ canvas, antialias: !LOW_GFX, powerPreference: 'high-performance' });
+    this.webgl = new THREE.WebGLRenderer({ canvas, antialias: !LOW_GFX_FLAG, powerPreference: 'high-performance' });
+    this.lowGfx = LOW_GFX_FLAG || isSoftwareGL(this.webgl);
+    const LOW_GFX = this.lowGfx;
     this.webgl.setPixelRatio(LOW_GFX ? 1 : Math.min(window.devicePixelRatio, 2.5));
     this.webgl.setSize(window.innerWidth, window.innerHeight);
     this.webgl.shadowMap.enabled = !LOW_GFX;
@@ -70,13 +93,13 @@ export class Renderer {
 
     this.scene.fog = new THREE.Fog(0xa6c6e0, 130, 470);
 
-    // sky dome
-    const sky = new THREE.Mesh(
+    // sky dome — follows the camera so the world strip never outruns it
+    this.sky = new THREE.Mesh(
       new THREE.SphereGeometry(560, 24, 16),
       new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false, depthWrite: false }),
     );
-    sky.renderOrder = -10;
-    this.scene.add(sky);
+    this.sky.renderOrder = -10;
+    this.scene.add(this.sky);
 
     const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x46603a, 1.0);
     this.scene.add(hemi);
@@ -127,14 +150,19 @@ export class Renderer {
       this.scene.add(sp);
     }
 
-    // clouds
+    // clouds, spread over the whole zone strip
     const cloudTex = cloudTexture();
-    for (let i = 0; i < (LOW_GFX ? 10 : 20); i++) {
+    const cloudSpan = (WORLD_MAX_Z - WORLD_MIN_Z) + 240;
+    for (let i = 0; i < (LOW_GFX ? 14 : 30); i++) {
       const mat = new THREE.SpriteMaterial({ map: cloudTex, transparent: true, opacity: 0.85, fog: false, depthWrite: false });
       const cl = new THREE.Sprite(mat);
       const sc = 60 + Math.random() * 90;
       cl.scale.set(sc, sc * 0.45, 1);
-      cl.position.set((Math.random() - 0.5) * 600, 95 + Math.random() * 55, (Math.random() - 0.5) * 600);
+      cl.position.set(
+        (Math.random() - 0.5) * 600,
+        95 + Math.random() * 55,
+        WORLD_MIN_Z - 120 + Math.random() * cloudSpan,
+      );
       this.clouds.push(cl);
       this.scene.add(cl);
     }
@@ -147,8 +175,9 @@ export class Renderer {
       color: 0x2a6a96, transparent: true, opacity: 0.8, shininess: 140,
       specular: 0xd8ecff, map: this.waterTex,
     });
-    this.water = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE).rotateX(-Math.PI / 2), waterMat);
-    this.water.position.y = WATER_LEVEL;
+    const worldDepth = WORLD_MAX_Z - WORLD_MIN_Z;
+    this.water = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_SIZE, worldDepth).rotateX(-Math.PI / 2), waterMat);
+    this.water.position.set(0, WATER_LEVEL, (WORLD_MIN_Z + WORLD_MAX_Z) / 2);
     this.scene.add(this.water);
 
     this.buildDecorations();
@@ -223,22 +252,60 @@ export class Renderer {
   // -------------------------------------------------------------------------
 
   private buildTerrain(): void {
-    const seg = LOW_GFX ? 240 : 440;
-    const size = WORLD_SIZE;
-    const geo = new THREE.PlaneGeometry(size, size, seg, seg);
+    const detail = groundDetailTexture();
+    detail.repeat.set(160, 160);
+    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, map: detail });
+    for (const zone of ZONES) this.buildTerrainChunk(zone, mat);
+  }
+
+  // Ground colors per biome; boundaries blend across the same window as the
+  // heightfield's shape blend.
+  private static BIOME_PALETTE: Record<BiomeId, { grass: number; grassDark: number; grassYellow: number; dirt: number; sand: number }> = {
+    vale: { grass: 0x55913f, grassDark: 0x3f7230, grassYellow: 0x7a9a3d, dirt: 0x8a6f47, sand: 0xc2b283 },
+    marsh: { grass: 0x596d36, grassDark: 0x41522b, grassYellow: 0x71764a, dirt: 0x6e5a3e, sand: 0x8f7f5c },
+    peaks: { grass: 0x687a55, grassDark: 0x4d5c45, grassYellow: 0x8d9168, dirt: 0x7d6a50, sand: 0xb0a486 },
+  };
+
+  private buildTerrainChunk(zone: ZoneDef, mat: THREE.Material): void {
+    // per-zone chunks: keep the whole strip near the old single-zone triangle
+    // budget so software-GL test runners stay usable
+    const segX = this.lowGfx ? 140 : 256;
+    const depth = zone.zMax - zone.zMin;
+    const segZ = Math.max(8, Math.round(segX * (depth / WORLD_SIZE)));
+    const geo = new THREE.PlaneGeometry(WORLD_SIZE, depth, segX, segZ);
     geo.rotateX(-Math.PI / 2);
+    geo.translate(0, 0, (zone.zMin + zone.zMax) / 2);
     const pos = geo.attributes.position as THREE.BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
-    const grass = new THREE.Color(0x55913f);
-    const grassDark = new THREE.Color(0x3f7230);
-    const grassYellow = new THREE.Color(0x7a9a3d);
-    const dirt = new THREE.Color(0x8a6f47);
     const dirtDark = new THREE.Color(0x73592f);
     const rock = new THREE.Color(0x7a7a72);
-    const sand = new THREE.Color(0xc2b283);
     const hazyPeak = new THREE.Color(0xa8bdd4); // world-rim mountains, atmospheric
     const snowCap = new THREE.Color(0xedf3fa);
     const c = new THREE.Color();
+    const grass = new THREE.Color(), grassDark = new THREE.Color(), grassYellow = new THREE.Color();
+    const dirt = new THREE.Color(), sand = new THREE.Color();
+    const pals = ZONES.map((zn) => {
+      const p = Renderer.BIOME_PALETTE[zn.biome];
+      return {
+        grass: new THREE.Color(p.grass), grassDark: new THREE.Color(p.grassDark),
+        grassYellow: new THREE.Color(p.grassYellow), dirt: new THREE.Color(p.dirt), sand: new THREE.Color(p.sand),
+      };
+    });
+    const paletteAt = (z: number) => {
+      grass.copy(pals[0].grass); grassDark.copy(pals[0].grassDark);
+      grassYellow.copy(pals[0].grassYellow); dirt.copy(pals[0].dirt); sand.copy(pals[0].sand);
+      for (let i = 0; i + 1 < ZONES.length; i++) {
+        const b = ZONES[i].zMax;
+        const t = Math.max(0, Math.min(1, (z - (b - 30)) / 65));
+        const tt = t * t * (3 - 2 * t);
+        if (tt <= 0) break;
+        grass.lerp(pals[i + 1].grass, tt);
+        grassDark.lerp(pals[i + 1].grassDark, tt);
+        grassYellow.lerp(pals[i + 1].grassYellow, tt);
+        dirt.lerp(pals[i + 1].dirt, tt);
+        sand.lerp(pals[i + 1].sand, tt);
+      }
+    };
     const seed = this.sim.cfg.seed;
     const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
     for (let i = 0; i < pos.count; i++) {
@@ -249,21 +316,34 @@ export class Renderer {
       const hx = terrainHeight(x + eps, z, seed) - terrainHeight(x - eps, z, seed);
       const hz = terrainHeight(x, z + eps, seed) - terrainHeight(x, z - eps, seed);
       const slope = Math.sqrt(hx * hx + hz * hz) / (2 * eps);
-      const dTown = Math.sqrt(x * x + z * z);
+      paletteAt(z);
       // base grass with patchy variation
       const v = (Math.sin(x * 0.21) * Math.cos(z * 0.17) + 1) / 2;
       c.copy(grass).lerp(grassDark, v);
       const v2 = (Math.sin(x * 0.043 + 5) * Math.cos(z * 0.05 + 2) + 1) / 2;
       c.lerp(grassYellow, v2 * 0.35);
       if (h < WATER_LEVEL + 1.6) c.copy(sand);
-      if (dTown < 14) c.lerp(dirtDark, 0.7);
+      // packed dirt at each hub settlement
+      for (const zn of ZONES) {
+        const dHub = Math.hypot(x - zn.hub.x, z - zn.hub.z);
+        if (dHub < 14) { c.lerp(dirtDark, 0.7); break; }
+      }
       const rd = roadDistance(x, z);
       if (rd < 2.0) c.lerp(dirt, 0.85);
       else if (rd < 3.4) c.lerp(dirt, 0.85 * (1 - (rd - 2.0) / 1.4));
       if (slope > 0.55) c.lerp(rock, Math.min(1, (slope - 0.55) * 2));
+      // high ground (ridges, peaks) goes rocky then snowy
+      if (h > 22) {
+        c.lerp(rock, clamp01((h - 22) / 10) * 0.7);
+        c.lerp(snowCap, clamp01((h - 34) / 14) * 0.85);
+      }
       // the rim wall reads as distant sunlit peaks, not a black cliff
-      const edge = Math.max(Math.abs(x), Math.abs(z));
-      const rim = clamp01((edge - (WORLD_SIZE / 2 - 32)) / 26);
+      const edge = Math.max(
+        Math.abs(x) - (WORLD_MAX_X - 32),
+        WORLD_MIN_Z + 32 - z,
+        z - (WORLD_MAX_Z - 32),
+      );
+      const rim = clamp01(edge / 26);
       if (rim > 0) {
         c.lerp(hazyPeak, rim * 0.9);
         c.lerp(snowCap, clamp01((h - 26) / 16) * rim * 0.8);
@@ -272,9 +352,6 @@ export class Renderer {
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
-    const detail = groundDetailTexture();
-    detail.repeat.set(160, 160);
-    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, map: detail });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
     this.scene.add(mesh);
@@ -360,11 +437,11 @@ export class Renderer {
   private buildGrass(): void {
     const seed = this.sim.cfg.seed;
     const positions: { x: number; z: number; s: number; r: number }[] = [];
-    const step = LOW_GFX ? 4.5 : 3.4;
-    const half = WORLD_SIZE / 2 - 16;
+    const step = this.lowGfx ? 4.5 : 3.4;
+    const xHalf = WORLD_MAX_X - 16;
     let h1 = 0;
-    for (let gx = -half; gx < half; gx += step) {
-      for (let gz = -half; gz < half; gz += step) {
+    for (let gx = -xHalf; gx < xHalf; gx += step) {
+      for (let gz = WORLD_MIN_Z + 16; gz < WORLD_MAX_Z - 16; gz += step) {
         h1 = (Math.sin(gx * 12.9898 + gz * 78.233) * 43758.5453) % 1;
         const r = Math.abs(h1);
         if (r > 0.5) continue;
@@ -372,7 +449,11 @@ export class Renderer {
         const z = gz + ((r * 7) % 1 - 0.5) * 8;
         const h = terrainHeight(x, z, seed);
         if (h < WATER_LEVEL + 1.6) continue;
-        if (Math.sqrt(x * x + z * z) < 15) continue;
+        let nearHub = false;
+        for (const zn of ZONES) {
+          if (Math.hypot(x - zn.hub.x, z - zn.hub.z) < 15) { nearHub = true; break; }
+        }
+        if (nearHub) continue;
         if (roadDistance(x, z) < 3.2) continue;
         positions.push({ x, z, s: 0.45 + r * 0.5, r: r * 6 });
       }
@@ -408,9 +489,9 @@ export class Renderer {
     let objectMesh: THREE.Object3D | undefined;
 
     let portal: THREE.Mesh | undefined;
-    if (e.kind === 'object' && (e.templateId === 'crypt_door' || e.templateId === 'crypt_exit')) {
+    if (e.kind === 'object' && (e.templateId === 'dungeon_door' || e.templateId === 'dungeon_exit')) {
       // dungeon doorway: stone arch with a swirling portal
-      const entering = e.templateId === 'crypt_door';
+      const entering = e.templateId === 'dungeon_door';
       const tint = entering ? 0x9a5df0 : 0x6ab8ff;
       rig = { body: new THREE.Group(), parts: {}, kind: 'humanoid', height: 4.6 };
       const stone = new THREE.MeshLambertMaterial({ color: 0x6a6a72 });
@@ -502,8 +583,14 @@ export class Renderer {
   // The Hollow Crypt interior, built lazily per instance origin.
   // ---------------------------------------------------------------------
 
-  private builtCrypts = new Set<number>();
+  private builtInteriors = new Set<string>();
   private fogState: 'outdoor' | 'dungeon' | 'underwater' = 'outdoor';
+
+  private buildInterior(interior: string, ox: number, oz: number): void {
+    // one builder per DungeonDef.interior key
+    if (interior === 'crypt') this.buildCrypt(ox, oz);
+    else this.buildCrypt(ox, oz);
+  }
 
   private buildCrypt(ox: number, oz: number): void {
     const g = new THREE.Group();
@@ -575,14 +662,15 @@ export class Renderer {
   private updateAmbience(px: number, camY: number): void {
     const inside = px > DUNGEON_X_THRESHOLD;
     if (inside) {
-      // build the crypt copy the player is standing in
-      for (let i = 0; i < INSTANCE_SLOT_COUNT; i++) {
-        const o = instanceOrigin(i);
-        if (Math.abs(px - o.x) < 200 && !this.builtCrypts.has(i)) {
-          const p = this.sim.player;
-          if (Math.abs(p.pos.z - o.z) < 250) {
-            this.builtCrypts.add(i);
-            this.buildCrypt(o.x, o.z);
+      // build the interior copy the player is standing in
+      for (const dungeon of DUNGEON_LIST) {
+        for (let i = 0; i < INSTANCE_SLOT_COUNT; i++) {
+          const key = `${dungeon.id}:${i}`;
+          if (this.builtInteriors.has(key)) continue;
+          const o = instanceOrigin(dungeon.index, i);
+          if (Math.abs(px - o.x) < 200 && Math.abs(this.sim.player.pos.z - o.z) < 250) {
+            this.builtInteriors.add(key);
+            this.buildInterior(dungeon.interior, o.x, o.z);
           }
         }
       }
@@ -736,7 +824,7 @@ export class Renderer {
           this.vfx.castSparkle(e.id, ABILITIES[e.castingAbility]?.school ?? 'arcane', dt);
         }
         // sitting pose
-        if (e.kind === 'player' && (e.sitting || e.consuming)) {
+        if (e.kind === 'player' && (e.sitting || e.eating || e.drinking)) {
           activeRig.body.position.y = -0.8;
           if (parts.leftLeg) parts.leftLeg.rotation.x = -1.4;
           if (parts.rightLeg) parts.rightLeg.rotation.x = -1.4;
@@ -807,7 +895,9 @@ export class Renderer {
       this.sun.position.set(pp.x + 90, pp.y + 140, pp.z + 50);
       this.sun.target.position.set(pp.x, pp.y, pp.z);
     }
-    // sun disc rides the sky relative to the camera
+    // sky dome + sun disc ride along with the camera
+    this.sky.position.set(this.camera.position.x, 0, this.camera.position.z);
+    this.sky.visible = this.fogState === 'outdoor';
     for (const sp of this.sunSprites) {
       sp.position.copy(this.camera.position).addScaledVector(this.sunDir, 760);
       sp.visible = this.fogState === 'outdoor';
@@ -841,7 +931,7 @@ export class Renderer {
       const dx = e.pos.x - p.pos.x, dz = e.pos.z - p.pos.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
       const isSelf = e.id === p.id;
-      const isDoor = e.templateId === 'crypt_door' || e.templateId === 'crypt_exit';
+      const isDoor = e.templateId === 'dungeon_door' || e.templateId === 'dungeon_exit';
       const hidden = isSelf || dist > NAMEPLATE_RANGE
         || (e.dead && !e.lootable && e.kind === 'mob')
         || (e.kind === 'object' && !isDoor)

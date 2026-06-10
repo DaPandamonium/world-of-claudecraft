@@ -184,7 +184,7 @@ describe('elite mobs', () => {
     const sim = makeWorld();
     const pid = sim.addPlayer('warrior', 'Tank');
     sim.enterCrypt(pid);
-    const origin = instanceOrigin(0);
+    const origin = instanceOrigin(0, 0);
     const shambler = nearestMob(sim, 'crypt_shambler', origin);
     expect(shambler).toBeTruthy();
     const t = MOBS.crypt_shambler;
@@ -392,7 +392,7 @@ describe('the Hollow Crypt', () => {
     expect(sim.instanceSlotAt(ec.pos)).not.toBe(sim.instanceSlotAt(ea.pos));
     // elites spawned in each claimed instance
     const slotA = sim.instanceSlotAt(ea.pos)!;
-    const originA = instanceOrigin(slotA);
+    const originA = instanceOrigin(0, slotA);
     const bossA = nearestMob(sim, 'morthen', originA);
     expect(bossA).toBeTruthy();
     expect(Math.abs(bossA.pos.x - originA.x)).toBeLessThan(50);
@@ -408,7 +408,7 @@ describe('the Hollow Crypt', () => {
     teleport(sim, a, 80, 88);
     sim.enterCrypt(a);
     const slot = sim.instanceSlotAt(sim.entities.get(a)!.pos)!;
-    const origin = instanceOrigin(slot);
+    const origin = instanceOrigin(0, slot);
     const cryptMobs = [...sim.entities.values()].filter(
       (e) => e.kind === 'mob' && Math.abs(e.pos.x - origin.x) < 120 && Math.abs(e.pos.z - origin.z) < 250,
     );

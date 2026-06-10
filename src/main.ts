@@ -81,8 +81,8 @@ function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWorld | 
     if (bestCorpse !== null) { world.lootCorpse(bestCorpse); return; }
     if (bestObj !== null) {
       const obj = world.entities.get(bestObj)!;
-      if (obj.templateId === 'crypt_door') { world.enterCrypt(); return; }
-      if (obj.templateId === 'crypt_exit') { world.leaveCrypt(); return; }
+      if (obj.templateId === 'dungeon_door' && obj.dungeonId) { world.enterDungeon(obj.dungeonId); return; }
+      if (obj.templateId === 'dungeon_exit') { world.leaveDungeon(); return; }
       world.pickUpObject(bestObj);
       return;
     }
@@ -104,8 +104,8 @@ function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWorld | 
       // target portrait (right-click it), like classic WoW unit frames
       if (e.kind === 'object') {
         if (d > INTERACT_RANGE + 1) { hud.showError('Too far away.'); return; }
-        if (e.templateId === 'crypt_door') world.enterCrypt();
-        else if (e.templateId === 'crypt_exit') world.leaveCrypt();
+        if (e.templateId === 'dungeon_door' && e.dungeonId) world.enterDungeon(e.dungeonId);
+        else if (e.templateId === 'dungeon_exit') world.leaveDungeon();
         else world.pickUpObject(id);
       } else if (e.kind === 'mob' && e.dead && e.lootable) {
         if (d <= INTERACT_RANGE + 1) hud.openLoot(id, x, y);
@@ -121,8 +121,8 @@ function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWorld | 
       if (e.kind === 'object') {
         const d = dist2d(world.player.pos, e.pos);
         if (d > INTERACT_RANGE + 1) return;
-        if (e.templateId === 'crypt_door') world.enterCrypt();
-        else if (e.templateId === 'crypt_exit') world.leaveCrypt();
+        if (e.templateId === 'dungeon_door' && e.dungeonId) world.enterDungeon(e.dungeonId);
+        else if (e.templateId === 'dungeon_exit') world.leaveDungeon();
         else world.pickUpObject(id);
       }
     }

@@ -129,7 +129,7 @@ describe('the Hollow Crypt doors', () => {
     expect(p.pos.x).toBeGreaterThan(DUNGEON_X_THRESHOLD);
 
     // the exit portal sits 6yd behind the entry point — walk into it
-    const exit = [...sim.entities.values()].find((e) => e.templateId === 'crypt_exit')!;
+    const exit = [...sim.entities.values()].find((e) => e.templateId === 'dungeon_exit')!;
     p.pos.x = exit.pos.x;
     p.pos.z = exit.pos.z + 1.2;
     p.facing = Math.PI;

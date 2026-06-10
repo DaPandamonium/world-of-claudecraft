@@ -381,7 +381,35 @@ describe('food, drink, vendor', () => {
     sim.moveInput.forward = true;
     sim.tick();
     expect(sim.player.sitting).toBe(false);
-    expect(sim.player.consuming).toBe(null);
+    expect(sim.player.eating).toBe(null);
+    expect(sim.player.drinking).toBe(null);
+  });
+
+  it('eats and drinks at the same time', () => {
+    const sim = makeSim('mage');
+    sim.addItem('baked_bread', 1);
+    sim.addItem('spring_water', 1);
+    sim.player.hp = 20;
+    sim.player.resource = 10;
+    sim.player.combatTimer = 99;
+    sim.player.inCombat = false;
+    sim.useItem('baked_bread');
+    sim.useItem('spring_water');
+    expect(sim.player.eating).not.toBe(null);
+    expect(sim.player.drinking).not.toBe(null);
+    expect(sim.player.sitting).toBe(true);
+    const hpBefore = sim.player.hp;
+    const manaBefore = sim.player.resource;
+    for (let i = 0; i < 20 * 6; i++) sim.tick();
+    expect(sim.player.hp).toBeGreaterThan(hpBefore);
+    expect(sim.player.resource).toBeGreaterThan(manaBefore);
+    // both still ticking after 6 of the 18 seconds
+    expect(sim.player.eating).not.toBe(null);
+    expect(sim.player.drinking).not.toBe(null);
+    // taking damage interrupts both
+    (sim as any).dealDamage(null, sim.player, 1, false, 'physical', 'Test', 'hit', true);
+    expect(sim.player.eating).toBe(null);
+    expect(sim.player.drinking).toBe(null);
   });
 
   it('mage conjures water and drinking restores mana', () => {
