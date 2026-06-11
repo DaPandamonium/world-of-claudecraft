@@ -133,7 +133,9 @@ export class CharacterVisual {
       }
     }
 
-    const r = Math.max(0.45, this.height * 0.26);
+    // capsule from measured body extents — long/wide creatures (wolves,
+    // dragons) were nearly unclickable with a height-derived sliver
+    const r = prep.clickRadius;
     this.clickProxy = new THREE.Mesh(clickGeo(), clickMat());
     this.clickProxy.scale.set(r * 2, this.height, r * 2);
     this.clickProxy.visible = false;

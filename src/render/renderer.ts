@@ -1055,7 +1055,31 @@ export class Renderer {
         o = o.parent;
       }
     }
-    return null;
+    // Forgiving assist: nothing under the ray, so snap to the nearest
+    // targetable character within a small screen radius — chibi proportions
+    // and melee scrums (often hidden behind the player's own model) make
+    // precise capsule clicks fiddly. Objects (doors/loot) still need a
+    // direct hit; the local player never competes for the click.
+    const SLOPPY_PICK_PX = 26;
+    let bestId: number | null = null;
+    let bestD = SLOPPY_PICK_PX;
+    for (const [id, v] of this.views) {
+      if (id === this.sim.playerId || !v.visual || !v.group.visible) continue;
+      const e = this.sim.entities.get(id);
+      if (!e || (e.dead && !e.lootable)) continue;
+      this.tmpV.copy(v.group.position);
+      this.tmpV.y += v.height * e.scale * 0.5;
+      this.tmpV.project(this.camera);
+      if (this.tmpV.z > 1) continue;
+      const sx = (this.tmpV.x * 0.5 + 0.5) * window.innerWidth;
+      const sy = (-this.tmpV.y * 0.5 + 0.5) * window.innerHeight;
+      const d = Math.hypot(sx - clientX, sy - clientY);
+      if (d < bestD) {
+        bestD = d;
+        bestId = id;
+      }
+    }
+    return bestId;
   }
 
   worldToScreen(x: number, y: number, z: number): { x: number; y: number; behind: boolean } {

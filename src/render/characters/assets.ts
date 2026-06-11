@@ -216,6 +216,9 @@ export interface PreparedVisual {
   idleGeo: THREE.BufferGeometry | null;
   /** source materials aligned with idleGeo groups */
   idleSrcMats: THREE.Material[];
+  /** click-capsule radius in world units (from measured XZ body extents —
+   *  long/wide creatures like wolves need far more than a humanoid sliver) */
+  clickRadius: number;
 }
 
 const prepared = new Map<string, PreparedVisual>();
@@ -265,6 +268,8 @@ export function prepareVisual(key: string): PreparedVisual {
   const rawHeight = Math.max(1e-3, bounds.max.y - bounds.min.y);
   const normScale = def.height / rawHeight;
   const yOffset = (def.hover ?? 0) - bounds.min.y * normScale;
+  const clickRadius = Math.min(2.2, Math.max(0.5,
+    Math.max(bounds.max.x, -bounds.min.x, bounds.max.z, -bounds.min.z) * normScale * 0.9));
 
   const norm = new THREE.Matrix4()
     .makeTranslation(0, yOffset, 0)
@@ -273,7 +278,7 @@ export function prepareVisual(key: string): PreparedVisual {
 
   const { geo, mats } = bakeStaticPose(temp, norm);
 
-  const prep: PreparedVisual = { key, def, normScale, yOffset, clips, idleGeo: geo, idleSrcMats: mats };
+  const prep: PreparedVisual = { key, def, normScale, yOffset, clips, idleGeo: geo, idleSrcMats: mats, clickRadius };
   prepared.set(key, prep);
   return prep;
 }
