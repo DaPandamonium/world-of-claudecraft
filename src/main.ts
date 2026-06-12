@@ -15,31 +15,86 @@ const WORLD_SEED = 20061; // fixed: World of Claudecraft is a persistent place
 const $ = <T extends HTMLElement = HTMLElement>(sel: string): T => document.querySelector(sel) as T;
 
 // ---------------------------------------------------------------------------
+// Loading screen (shown from "enter world" until the first frame renders)
+// ---------------------------------------------------------------------------
+
+const LOADING_FADE_MS = 350; // keep in sync with the #loading-screen CSS transition
+
+let loadingHideTimer: number | null = null;
+
+function showLoadingScreen(statusText: string): void {
+  const el = $('#loading-screen');
+  if (loadingHideTimer !== null) {
+    window.clearTimeout(loadingHideTimer);
+    loadingHideTimer = null;
+  }
+  el.classList.remove('fade');
+  el.classList.add('visible');
+  setLoadingStatus(statusText);
+}
+
+function setLoadingStatus(text: string): void {
+  $('#ls-status').textContent = text;
+}
+
+function setLoadingProgress(done: number, total: number): void {
+  $('#ls-fill').style.width = total > 0 ? `${Math.round((done / total) * 100)}%` : '0%';
+  setLoadingStatus(`Loading world… ${done}/${total}`);
+}
+
+function hideLoadingScreen(): void {
+  const el = $('#loading-screen');
+  if (!el.classList.contains('visible')) return;
+  el.classList.add('fade');
+  loadingHideTimer = window.setTimeout(() => {
+    el.classList.remove('visible', 'fade');
+    loadingHideTimer = null;
+  }, LOADING_FADE_MS);
+}
+
+// The loading screen blocks pointer input but a covered button keeps keyboard
+// focus, so Enter/Space could re-fire it mid-entry. One entry per page load;
+// every failure path recovers via fatalOverlay's reload.
+let hasBegunWorldEntry = false;
+
+function beginWorldEntry(): boolean {
+  if (hasBegunWorldEntry) return false;
+  hasBegunWorldEntry = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Shared game wiring (used by both offline sim and online world)
 // ---------------------------------------------------------------------------
 
 async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWorld | null): Promise<void> {
   // Model/texture/HDRI fetches were kicked off at module import; the renderer
   // builds its scene synchronously, so everything must be resolved first.
-  // Keep the start screen up with a progress line — not a silent black screen.
-  const status = document.querySelector('#load-status') as HTMLElement | null;
-  if (status) status.textContent = 'Loading world…';
+  // The loading screen covers the gap — not a silent black screen.
+  showLoadingScreen('Loading world…');
+  $('#start-screen').style.display = 'none';
   try {
-    await assetsReady((done, total) => {
-      if (status) status.textContent = `Loading world… ${done}/${total}`;
-    });
+    await assetsReady((done, total) => setLoadingProgress(done, total));
   } catch (err) {
     fatalOverlay(`Asset loading failed — try reloading. ${err instanceof Error ? err.message : err}`);
     return;
   }
-  if (status) status.textContent = '';
-  $('#start-screen').style.display = 'none';
+  setLoadingStatus('Entering the world…');
 
   const canvas = $('#game-canvas') as unknown as HTMLCanvasElement;
   const nameplates = $('#nameplates') as HTMLDivElement;
 
-  const renderer = new Renderer(world, canvas, nameplates);
-  const hud = new Hud(world, renderer);
+  let renderer!: Renderer;
+  let hud!: Hud;
+  try {
+    renderer = new Renderer(world, canvas, nameplates);
+    hud = new Hud(world, renderer);
+  } catch (err) {
+    // e.g. WebGL context creation failure — surface it instead of leaving the
+    // loading screen up forever
+    fatalOverlay(`Could not start the renderer — try reloading. ${err instanceof Error ? err.message : err}`);
+    return;
+  }
 
   const chatInput = $('#chat-input') as unknown as HTMLInputElement;
   function openChat(): void {
@@ -82,6 +137,7 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
         case 'questlog': hud.toggleQuestLog(); break;
         case 'map': hud.toggleMap(); break;
         case 'nameplates': renderer.showNameplates = !renderer.showNameplates; break;
+        case 'meters': hud.toggleMeters(); break;
         case 'chat': openChat(); break;
         case 'escape':
           if (!hud.closeAll()) world.targetEntity(null);
@@ -202,6 +258,8 @@ async function startGame(world: IWorld, offlineSim: Sim | null, online: ClientWo
     hud.update();
   }
   requestAnimationFrame(frame);
+  // cut to the game only once the first frame is actually on screen
+  requestAnimationFrame(() => requestAnimationFrame(() => hideLoadingScreen()));
 
   (window as any).__game = { sim: world, world, renderer, input, hud, online };
 }
@@ -219,6 +277,7 @@ function sanitizeOfflineName(raw: string): string {
 }
 
 function startOffline(playerClass: PlayerClass, name: string): void {
+  if (!beginWorldEntry()) return;
   const sim = new Sim({ seed: WORLD_SEED, playerClass, playerName: name });
   void startGame(sim, sim, null);
 }
@@ -264,6 +323,8 @@ async function refreshCharacters(): Promise<void> {
 }
 
 function fatalOverlay(message: string): void {
+  hideLoadingScreen(); // its art would bleed through the translucent backdrop
+  if (document.getElementById('disconnect-overlay')) return; // first reason wins
   const el = document.createElement('div');
   el.id = 'disconnect-overlay';
   el.style.cssText = 'position:absolute;inset:0;background:#000c;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;z-index:200;color:#e8d8a8;font-family:Georgia,serif;font-size:20px;';
@@ -277,10 +338,11 @@ function fatalOverlay(message: string): void {
 }
 
 function enterWorld(c: CharacterSummary): void {
+  if (!beginWorldEntry()) return;
   audio.init();
   music.init();
+  showLoadingScreen('Connecting to realm…');
   const world = new ClientWorld(api.token!, c.id, c.class);
-  world.onDisconnect = (reason) => fatalOverlay(reason);
   // wait for hello + first snapshot so the world starts populated
   const waitStart = Date.now();
   const poll = setInterval(() => {
@@ -293,6 +355,12 @@ function enterWorld(c: CharacterSummary): void {
       fatalOverlay('Could not enter world (timeout). Is the game server running?');
     }
   }, 50);
+  // a rejected join must stop the poll too, or its timeout overlay would
+  // mask the real reason (e.g. "character already in world")
+  world.onDisconnect = (reason) => {
+    clearInterval(poll);
+    fatalOverlay(reason);
+  };
 }
 
 function wireStartScreens(): void {

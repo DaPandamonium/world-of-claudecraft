@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>World of Claudecraft</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>⚔️</text></svg>" />
+<link rel="preload" as="image" href="/loading-screen.jpg" />
 <style>
   :root {
     --gold: #ffd100;
@@ -167,6 +168,23 @@
   #quest-tracker .qt-obj { color: #e8e0c8; font-size: 11px; margin-left: 8px; }
   #quest-tracker .qt-obj.done { color: #7fdc4f; }
 
+  /* ---------- combat meters ---------- */
+  #meters-window { position: absolute; right: 12px; top: 230px; width: 240px; padding: 8px 10px; display: none; }
+  #meters-window .panel-title { margin-bottom: 4px; }
+  .mt-tab { background: #1a1410; border: 1px solid #463a1c; border-radius: 3px; color: #c9b27a;
+    font-size: 11px; padding: 1px 7px; cursor: pointer; }
+  .mt-tab.on { color: var(--gold); border-color: var(--gold-dim); background: #2a2010; }
+  .mt-view { font-size: 12px; color: var(--gold); font-family: var(--title-font); text-shadow: 1px 1px 1px #000; }
+  .mt-sub { font-size: 10px; color: #9c8f6e; margin: 1px 0 6px; }
+  .mt-row { position: relative; height: 17px; margin-bottom: 3px; background: #14100c; border: 1px solid #000;
+    border-radius: 2px; overflow: hidden; }
+  .mt-row.aggro { border-color: #c0392b; }
+  .mt-fill { position: absolute; inset: 0; border-radius: 1px; }
+  .mt-label { position: absolute; left: 5px; top: 0; line-height: 17px; font-size: 11px; color: #fff;
+    text-shadow: 1px 1px 1px #000; font-weight: bold; }
+  .mt-num { position: absolute; right: 5px; top: 0; line-height: 17px; font-size: 10px; color: #ffe;
+    text-shadow: 1px 1px 1px #000; }
+
   /* ---------- minimap ---------- */
   #minimap-wrap { position: absolute; right: 12px; top: 10px; width: 170px; text-align: center; }
   #zone-label { font-size: 13px; color: var(--gold); font-family: var(--title-font); text-shadow: 1px 1px 3px #000; margin-bottom: 3px; letter-spacing: 0.5px; }
@@ -302,6 +320,21 @@
   .class-card p { font-size: 10px; color: #9aa4b8; margin: 0; line-height: 1.45; }
   #controls-hint { margin-top: 34px; color: #6b7689; font-size: 11px; line-height: 1.8; text-align: center; }
   #controls-hint b { color: #93a1b8; }
+
+  /* ---------- loading screen (entering the world) ---------- */
+  #loading-screen { position: absolute; inset: 0; z-index: 150; display: none;
+    background: #0a0d14 url('/loading-screen.jpg') center / cover no-repeat;
+    flex-direction: column; align-items: center; justify-content: space-between;
+    padding: 6vh 0 7vh; opacity: 1; transition: opacity .35s ease; }
+  #loading-screen.visible { display: flex; }
+  #loading-screen.fade { opacity: 0; }
+  #loading-screen .ls-logo { width: min(380px, 64vw); height: auto;
+    filter: drop-shadow(0 0 24px #000c) drop-shadow(2px 2px 5px #000); }
+  .ls-progress { display: flex; flex-direction: column; align-items: center; gap: 9px; }
+  .ls-bar { width: min(420px, 70vw); height: 14px; border: 2px solid var(--border); outline: 1px solid #000;
+    border-radius: 8px; background: #0009; overflow: hidden; box-shadow: 0 2px 14px #000c, inset 0 1px 4px #000a; }
+  #ls-fill { height: 100%; width: 0%; background: linear-gradient(180deg, #ffd100, #c8a838); transition: width .2s ease; }
+  #ls-status { color: #e8d8a8; font-family: Georgia, serif; font-size: 13px; text-shadow: 1px 1px 2px #000; }
 
   /* ---------- online auth / character select ---------- */
   .mode-row { display: flex; gap: 24px; }
@@ -449,6 +482,23 @@
     <div id="quest-log-window" class="window panel"></div>
     <div id="vendor-window" class="window panel"></div>
     <div id="map-window" class="window panel"><canvas id="map-canvas" width="560" height="560"></canvas></div>
+    <div id="meters-window" class="panel">
+      <div class="panel-title">
+        <span class="mt-tabs">
+          <button class="mt-tab on" data-tab="dmg">Dmg</button>
+          <button class="mt-tab" data-tab="heal">Heal</button>
+          <button class="mt-tab" data-tab="threat">Threat</button>
+        </span>
+        <span>
+          <button class="x-btn mt-prev" title="older segment">&#9664;</button>
+          <button class="x-btn mt-next" title="newer segment">&#9654;</button>
+          <button class="x-btn mt-close">&times;</button>
+        </span>
+      </div>
+      <div class="mt-view"></div>
+      <div class="mt-sub"></div>
+      <div class="mt-rows"></div>
+    </div>
     <div id="tooltip" class="panel"></div>
 
     <div id="error-msg"></div>
@@ -464,7 +514,6 @@
 
   <div id="start-screen">
     <img id="title-logo" src="/worldofclaudecraft-logo.png" alt="World of Claudecraft" />
-    <div id="load-status" style="color:#b9c4d8;font-size:13px;min-height:18px;margin-bottom:8px;font-family:Georgia,serif"></div>
 
     <div id="mode-select">
       <div class="mode-row">
@@ -532,6 +581,14 @@
     <div id="controls-hint">
       <b>WASD</b> move &middot; <b>A/D</b> turn, <b>Q/E</b> strafe &middot; <b>right-drag</b> mouselook &middot; <b>left-drag</b> orbit camera &middot; wheel zoom &middot; <b>Space</b> jump<br/>
       <b>Tab</b> target &middot; <b>1-9,0</b> abilities &middot; <b>F</b> interact/loot &middot; <b>C</b> character &middot; <b>P</b> spellbook &middot; <b>L</b> quest log &middot; <b>M</b> map &middot; <b>B</b> bags &middot; <b>V</b> nameplates &middot; <b>R</b> autorun &middot; <b>Enter</b> chat
+    </div>
+  </div>
+
+  <div id="loading-screen">
+    <img class="ls-logo" src="/worldofclaudecraft-logo.png" alt="World of Claudecraft" />
+    <div class="ls-progress">
+      <div class="ls-bar"><div id="ls-fill"></div></div>
+      <div id="ls-status">Entering the world&hellip;</div>
     </div>
   </div>
 

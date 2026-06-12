@@ -9,6 +9,7 @@ import type { ZoneDef } from '../sim/data';
 import type { InvSlot } from '../sim/types';
 import { AbilityEffect, CONSUME_DURATION, Entity, GCD, ItemDef, SimEvent, dist2d, xpForLevel, MAX_LEVEL, MELEE_RANGE } from '../sim/types';
 import { terrainHeight, WATER_LEVEL, roadDistance } from '../sim/world';
+import { Meters } from './meters';
 import { audio } from '../game/audio';
 import { music } from '../game/music';
 import { iconDataUrl, QUALITY_COLOR } from './icons';
@@ -52,7 +53,10 @@ export class Hud {
   private lastZoneId = '';
   private mapZoneId = ''; // zone the cached map-window canvas was rendered for
 
+  private meters: Meters;
+
   constructor(private sim: IWorld, private renderer: Renderer) {
+    this.meters = new Meters(sim);
     this.buildActionBar();
     this.buildXpTicks();
     $('#pf-name').textContent = sim.player.name;
@@ -248,6 +252,7 @@ export class Hud {
   update(): void {
     const sim = this.sim;
     const p = sim.player;
+    this.meters.update();
 
     // player frame
     $('#pf-level').textContent = String(p.level);
@@ -580,6 +585,10 @@ export class Hud {
     ctx.restore();
   }
 
+  toggleMeters(): void {
+    this.meters.toggle();
+  }
+
   toggleMap(): void {
     const el = $('#map-window');
     if (el.style.display === 'block') { el.style.display = 'none'; return; }
@@ -686,6 +695,7 @@ export class Hud {
       // visual effects (swings, projectiles, glows) — for everyone nearby,
       // not just events involving this player
       this.renderer.handleEvent(ev);
+      this.meters.onEvent(ev);
       switch (ev.type) {
         case 'damage': {
           const src = sim.entities.get(ev.sourceId);
